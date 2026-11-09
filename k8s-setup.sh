@@ -778,11 +778,16 @@ if [[ "$MODE" == init ]]; then
     helm template calico-crds projectcalico/crd.projectcalico.org.v1 --version "$CALICO_VERSION" \
         | kubectl apply --server-side -f -
 
+    # Calico's default (firstFound) may pick any interface on nodes with more
+    # than one NIC, sending VXLAN over the wrong network and breaking pod
+    # traffic between nodes. Use the address Kubernetes registered instead.
     cat <<EOF > /etc/kubernetes/calico-values.yaml
 installation:
   cni:
     type: Calico
   calicoNetwork:
+    nodeAddressAutodetectionV4:
+      kubernetes: NodeInternalIP
     ipPools:
       - cidr: ${POD_CIDR}
         encapsulation: VXLAN
