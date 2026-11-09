@@ -153,7 +153,7 @@ curl -fsSL https://raw.githubusercontent.com/arabasso/k8s-setup/v1.0.0/k8s-setup
 1. Ativa os recursos Containers e Hyper-V (sem o hypervisor), reinicia e continua pela tarefa agendada `k8s-setup-resume`.
 2. Adiciona o hostname do VIP ao arquivo `hosts`.
 3. Roda os scripts oficiais [`Install-Containerd.ps1`](https://github.com/kubernetes-sigs/sig-windows-tools/blob/master/hostprocess/Install-Containerd.ps1) e [`PrepareNode.ps1`](https://github.com/kubernetes-sigs/sig-windows-tools/blob/master/hostprocess/PrepareNode.ps1) do sig-windows-tools.
-4. Roda o `kubeadm join`.
+4. Roda o `kubeadm join` com o `--node-ip` do kubelet fixado (`-NodeIp`, ou o IP da interface que alcança o VIP), para que o nó e o VXLAN do Calico usem a rede certa em nós com mais de uma placa, e com o taint `os=windows:NoSchedule`, que mantém workloads Linux fora do nó (workloads Windows precisam da toleration correspondente).
 
 Log: `C:\ProgramData\k8s-setup\k8s-setup.log`.
 
@@ -200,6 +200,7 @@ curl -fsSL https://raw.githubusercontent.com/arabasso/k8s-setup/master/k8s-setup
 | `-VipHostname` | Hostname do VIP | pergunta (`k8s-endpoint`) |
 | `-Token` | Token de bootstrap | pergunta |
 | `-CaCertHash` | Hash do certificado da CA | pergunta |
+| `-NodeIp` | IP com que o nó entra no cluster (use em nós com mais de uma placa de rede) | IP da interface que alcança o VIP |
 | `-NoRestart` | Não reinicia automaticamente | |
 
 Depois de baixar o script, veja `Get-Help .\k8s-setup.ps1 -Detailed`.

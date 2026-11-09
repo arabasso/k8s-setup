@@ -46,6 +46,11 @@ Bootstrap token (abcdef.0123456789abcdef).
 .PARAMETER CaCertHash
 CA certificate hash (sha256:...).
 
+.PARAMETER NodeIp
+IP this node registers in the cluster, which Calico also uses for VXLAN.
+Default: the address of the interface that reaches the VIP. Set it on nodes
+with more than one NIC when that is not the cluster network.
+
 .PARAMETER NoRestart
 Do not restart automatically when the features need it; the script still
 resumes at the next logon.
@@ -69,6 +74,7 @@ param(
     [string] $VipHostname,
     [string] $Token,
     [string] $CaCertHash,
+    [string] $NodeIp,
     [switch] $NoRestart,
     # Set by the logon task that resumes the script after the reboot.
     [switch] $Resume
@@ -167,9 +173,25 @@ try {
     $CaCertHash = Resolve-Value CaCertHash $CaCertHash "CA certificate hash" ${function:Test-CaCertHash}
     if (-not $CaCertHash.StartsWith("sha256:")) { $CaCertHash = "sha256:$CaCertHash" }
 
+    # On nodes with more than one NIC the kubelet may register the wrong one.
+    # Calico follows the node's InternalIP (NodeInternalIP in k8s-setup.sh), so
+    # VXLAN would then use an address outside the HNS network and traffic from
+    # other nodes would never reach the pods.
+    if (-not $NodeIp) {
+        $NodeIp = Find-NetRoute -RemoteIPAddress $Vip |
+            Where-Object { $_.IPAddress } |
+            Select-Object -First 1 -ExpandProperty IPAddress
+        if (-not $NodeIp) { throw "Could not find the interface that reaches $Vip; pass -NodeIp." }
+    }
+    if (-not (Test-Ipv4 $NodeIp)) { throw "Invalid value for -NodeIp: $NodeIp" }
+    if (-not (Get-NetIPAddress -IPAddress $NodeIp -ErrorAction SilentlyContinue)) {
+        throw "$NodeIp is not an address of this machine."
+    }
+
     Write-Host "Kubernetes: $KubernetesVersion"
     Write-Host "containerd: $ContainerdVersion (crictl $CrictlVersion)"
     Write-Host "Endpoint:   $VipHostname ($Vip)"
+    Write-Host "Node IP:    $NodeIp"
 
     # ----------------------------------------------------------------------
     Write-Step "Windows features"
@@ -216,6 +238,7 @@ try {
             "-VipHostname", $VipHostname,
             "-Token", $Token,
             "-CaCertHash", $CaCertHash,
+            "-NodeIp", $NodeIp,
             "-Resume"
         ) -join " "
 
@@ -284,8 +307,36 @@ try {
     if (Test-Path C:\etc\kubernetes\kubelet.conf) {
         Write-Host "This node has already joined a cluster; skipping."
     } else {
-        & C:\k\kubeadm.exe join "${VipHostname}:6443" --token $Token --discovery-token-ca-cert-hash $CaCertHash
-        if ($LASTEXITCODE -ne 0) { throw "kubeadm join failed (exit code $LASTEXITCODE)." }
+        # kubeadm join has no flag for the node IP and does not accept --token
+        # together with --config, so everything goes in the file. The taint keeps
+        # Linux workloads off this node; Windows ones need a toleration for it.
+        $joinConfig = "$StateDir\kubeadm-join.yaml"
+        try {
+            Set-Content -Path $joinConfig -Encoding Ascii -Value @"
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "${VipHostname}:6443"
+    token: "$Token"
+    caCertHashes:
+      - "$CaCertHash"
+nodeRegistration:
+  kubeletExtraArgs:
+    - name: node-ip
+      value: "$NodeIp"
+  taints:
+    - key: os
+      value: windows
+      effect: NoSchedule
+"@
+            & C:\k\kubeadm.exe join --config $joinConfig
+            if ($LASTEXITCODE -ne 0) { throw "kubeadm join failed (exit code $LASTEXITCODE)." }
+        }
+        finally {
+            # It holds the bootstrap token.
+            Remove-Item -Force $joinConfig -ErrorAction SilentlyContinue
+        }
     }
 
     # ----------------------------------------------------------------------
